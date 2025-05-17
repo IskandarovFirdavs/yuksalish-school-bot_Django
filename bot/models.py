@@ -31,3 +31,15 @@ class VideoSubmission(models.Model):
     task = models.ForeignKey(Task, on_delete=models.CASCADE)
     video = models.FileField(upload_to='videos/')
     submitted_at = models.DateTimeField(auto_now_add=True)
+    approved = models.BooleanField(default=False)
+
+
+class StudentTaskVideo(models.Model):
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='task_videos')
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, null=True, blank=True)  # bu MUHIM!
+    video_file = models.FileField(upload_to='student_videos/')
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+
+    def __str__(self):
+        return f"{self.student.username} - {self.video_file.name}"

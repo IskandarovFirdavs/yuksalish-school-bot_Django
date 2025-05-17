@@ -29,3 +29,12 @@ class TaskAdmin(admin.ModelAdmin):
 class VideoSubmissionAdmin(admin.ModelAdmin):
     list_display = ("user", "task", "submitted_at")
     list_filter = ("submitted_at",)
+
+from django.contrib import admin
+from .models import StudentTaskVideo
+
+@admin.register(StudentTaskVideo)
+class StudentTaskVideoAdmin(admin.ModelAdmin):
+    list_display = ('student', 'task', 'video_file', 'uploaded_at')
+    search_fields = ('student__username', 'task__title')
+    list_filter = ('uploaded_at', 'task')
