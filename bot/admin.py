@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import User, Branch, StudentClass, Task, VideoSubmission
+from .models import User, Branch, StudentClass, Task, VideoSubmission, MonthlyBook
+
 
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
@@ -38,3 +39,7 @@ class StudentTaskVideoAdmin(admin.ModelAdmin):
     list_display = ('student', 'task', 'video_file', 'uploaded_at')
     search_fields = ('student__username', 'task__title')
     list_filter = ('uploaded_at', 'task')
+
+@admin.register(MonthlyBook)
+class MonthlyBookAdmin(admin.ModelAdmin):
+    list_display = ['month', 'uploaded_at', 'uploaded_by']

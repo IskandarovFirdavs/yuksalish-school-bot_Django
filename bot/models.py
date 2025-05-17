@@ -43,3 +43,13 @@ class StudentTaskVideo(models.Model):
 
     def __str__(self):
         return f"{self.student.username} - {self.video_file.name}"
+
+
+class MonthlyBook(models.Model):
+    month = models.CharField(max_length=20)
+    file = models.FileField(upload_to='monthly_books/')
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    uploaded_by = models.ForeignKey(User, on_delete=models.CASCADE)
+
+    def __str__(self):
+        return f"{self.month} - {self.file.name}"

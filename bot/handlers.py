@@ -1,16 +1,17 @@
+import os
 from pathlib import Path
-
 from aiogram import Router, F
 from aiogram.filters import CommandStart
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton
+    ReplyKeyboardMarkup, KeyboardButton, FSInputFile
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from asgiref.sync import sync_to_async
 from datetime import datetime
-from bot.models import User, Branch, StudentClass, Task, StudentTaskVideo
+from bot.models import User, Branch, StudentClass, Task, StudentTaskVideo, MonthlyBook
+from schoolbot import settings
 from schoolbot.settings import MEDIA_ROOT
 
 router = Router()
@@ -27,14 +28,26 @@ class StudentTaskStates(StatesGroup):
     choosing_task = State()
     waiting_for_video = State()
 
+
+class CuratorStates(StatesGroup):
+    waiting_for_month = State()
+    waiting_for_book_file = State()
+
+
 # --- Helpers ---
 def get_main_menu(role: str) -> ReplyKeyboardMarkup:
     keyboard = []
     if role == "student":
-        keyboard = [[KeyboardButton(text="Vazifalar")]]
-    elif role in ("parent", "curator"):
-        keyboard = [[KeyboardButton(text="Statistika"), KeyboardButton(text="Vazifalar")]]
+        keyboard = [[KeyboardButton(text="Vazifalar")], [KeyboardButton(text="Kitoblar")]]
+    elif role == "curator":
+        keyboard = [
+            [KeyboardButton(text="Statistika"), KeyboardButton(text="Vazifalar")],
+            [KeyboardButton(text="Kitob qo‘shish")]
+        ]
+    elif role == "parent":
+        keyboard = [[KeyboardButton(text="Statistika")]]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
 
 # --- /start ---
 @router.message(CommandStart())
@@ -165,12 +178,12 @@ async def save_video_to_db(message: Message, video, student, task):
 
 # --- Video upload ---
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-@router.message(StudentTaskStates.waiting_for_video, F.video | F.video_note)
+@router.message(StudentTaskStates.waiting_for_video, F.video | F.video_note | F.voice)
 async def receive_video(message: Message, state: FSMContext):
     video = message.video or message.video_note
 
     if not video or video.duration > 60 or (video.file_size > 20 * 1024 * 1024):
-        await message.answer("⚠️ Video talablarga javob bermaydi (maksimal 1 daqiqa, 20MB).")
+        await message.answer("⚠️ Video talablarga javob bermaydi (maksimal 30 soniya ), 20MB).")
         return
 
     if message.forward_date is not None or message.forward_from is not None:
@@ -236,3 +249,72 @@ async def resubmit_video(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("♻️ Eski video o‘chirildi. Yangi videoni yuboring.")
     await state.update_data(selected_task_id=task_id)
     await state.set_state(StudentTaskStates.waiting_for_video)
+
+@router.message(F.text == "Kitob qo‘shish")
+async def add_book_prompt(message: Message, state: FSMContext):
+    await message.answer("Kitob qaysi oy uchun? (Masalan: May, Iyun...)")
+    await state.set_state(CuratorStates.waiting_for_month)
+
+@router.message(CuratorStates.waiting_for_month)
+async def get_month(message: Message, state: FSMContext):
+    await state.update_data(month=message.text)
+    await message.answer("Endi kitob faylini yuboring (PDF, DOC va h.k.).")
+    await state.set_state(CuratorStates.waiting_for_book_file)
+
+@router.message(CuratorStates.waiting_for_book_file, F.document)
+async def save_book_file(message: Message, state: FSMContext):
+    data = await state.get_data()
+    month = data['month']
+    doc = message.document
+
+    file = await message.bot.get_file(doc.file_id)
+    file_bytes = await message.bot.download_file(file.file_path)
+
+    file_name = f"{month}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{doc.file_name}"
+    save_path = Path(MEDIA_ROOT) / "monthly_books"
+    save_path.mkdir(parents=True, exist_ok=True)
+    file_path = save_path / file_name
+
+    with open(file_path, "wb") as f:
+        f.write(file_bytes.getvalue())
+
+    user = await sync_to_async(User.objects.get)(username=str(message.from_user.id))
+
+    await sync_to_async(MonthlyBook.objects.create)(
+        month=month,
+        file=f"monthly_books/{file_name}",
+        uploaded_by=user
+    )
+
+    await state.clear()
+    await message.answer("✅ Kitob muvaffaqiyatli yuklandi.")
+
+
+
+@router.message(F.text == "Kitoblar")
+async def show_books(message: Message):
+    books = await sync_to_async(list)(MonthlyBook.objects.all().order_by('-uploaded_at'))
+    if not books:
+        await message.answer("Hozircha kitoblar mavjud emas.")
+        return
+
+    months = sorted(set(book.month for book in books), reverse=True)
+    buttons = [[InlineKeyboardButton(text=month, callback_data=f"books_{month}")] for month in months]
+    await message.answer("Oy bo‘yicha kitoblar:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+
+@router.callback_query(F.data.startswith("books_"))
+async def show_books_for_month(callback: CallbackQuery):
+    month = callback.data.split("_")[1]
+    books = await sync_to_async(list)(MonthlyBook.objects.filter(month=month))
+
+    if not books:
+        await callback.message.answer(f"{month} oyi uchun kitoblar topilmadi.")
+        return
+
+    for book in books:
+        file_path = os.path.join(settings.MEDIA_ROOT, str(book.file))
+        doc = FSInputFile(path=file_path, filename=os.path.basename(file_path))
+        await callback.message.answer_document(document=doc, caption=f"{month} oyi uchun yuklangan kitob.")
+
