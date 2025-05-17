@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from aiogram import Router, F
 from aiogram.filters import CommandStart
 from aiogram.types import (
@@ -6,15 +8,10 @@ from aiogram.types import (
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.enums import ContentType
-
 from asgiref.sync import sync_to_async
-from pathlib import Path
 from datetime import datetime
-
 from bot.models import User, Branch, StudentClass, Task, StudentTaskVideo
 from schoolbot.settings import MEDIA_ROOT
-from bot.telegram_bot import bot
 
 router = Router()
 
@@ -141,66 +138,69 @@ async def task_selected(callback: CallbackQuery, state: FSMContext):
     task = await sync_to_async(Task.objects.get)(id=task_id)
     await callback.message.answer(
         f"✅ Siz tanlagan vazifa: *{task.title}*\n\n"
-        "Iltimos, 1 daqiqadan oshmaydigan video yuboring.",
+        "Iltimos, 30 soniyadan oshmaydigan video yuboring.",
         parse_mode="Markdown"
     )
 
+# save_video_to_db
+async def save_video_to_db(message: Message, video, student, task):
+    file = await message.bot.get_file(video.file_id)
+    file_bytes = await message.bot.download_file(file.file_path)
+
+    file_name = f"{message.from_user.id}_{task.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.mp4"
+    save_path = Path(MEDIA_ROOT) / "student_videos"
+    save_path.mkdir(parents=True, exist_ok=True)
+    file_path = save_path / file_name
+
+    with open(file_path, "wb") as f:
+        f.write(file_bytes.getvalue())
+
+    await sync_to_async(StudentTaskVideo.objects.create)(
+        student=student,
+        task=task,
+        video_file=f"student_videos/{file_name}"
+    )
+
+
+
 # --- Video upload ---
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 @router.message(StudentTaskStates.waiting_for_video, F.video | F.video_note)
 async def receive_video(message: Message, state: FSMContext):
-    from datetime import datetime
-    from pathlib import Path
-    from django.conf import settings
-    from asgiref.sync import sync_to_async
-    from .models import User, Task, StudentTaskVideo  # o'zingizdagi yo'l bo'yicha
-
     video = message.video or message.video_note
-    print("📥 Video qabul qilindi")
 
-    # --- Validatsiya ---
-    if not video or video.duration > 30 or (video.file_size > 5 * 1024 * 1024):
-        await message.answer("⚠️ Video talablarga javob bermaydi (maksimal 30 sekund, 5MB).")
+    if not video or video.duration > 60 or (video.file_size > 20 * 1024 * 1024):
+        await message.answer("⚠️ Video talablarga javob bermaydi (maksimal 1 daqiqa, 20MB).")
         return
 
     if message.forward_date is not None or message.forward_from is not None:
         await message.answer("⚠️ Forward qilingan videolar qabul qilinmaydi.")
         return
 
-    # --- Holatdan topshiriq ID ni olish ---
     data = await state.get_data()
     task_id = data.get("selected_task_id")
-    print("🎯 Task ID:", task_id)
+    student = await sync_to_async(User.objects.get)(username=str(message.from_user.id))
+    task = await sync_to_async(Task.objects.get)(id=task_id)
 
-    try:
-        # --- Telegramdan faylni yuklab olish ---
-        file = await message.bot.get_file(video.file_id)
-        file_bytes = await message.bot.download_file(file.file_path)
+    # Bugungi topshiriqni allaqachon yuborganmi?
+    today = datetime.now().date()
+    existing = await sync_to_async(StudentTaskVideo.objects.filter)(
+        student=student, task=task, uploaded_at__date=today
+    )
+    exists = await sync_to_async(lambda: existing.exists())()
 
-        # --- Faylni saqlash ---
-        file_name = f"{message.from_user.id}_{task_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.mp4"
-        save_path = Path(settings.MEDIA_ROOT) / "student_videos"
-        save_path.mkdir(parents=True, exist_ok=True)
-        file_path = save_path / file_name
+    if exists:
+        # Qayta topshirishga ruxsat berish
+        builder = InlineKeyboardBuilder()
+        builder.button(text="♻️ Qayta topshirish", callback_data=f"resubmit_{task_id}")
+        await message.answer("⚠️ Siz bu vazifani bugun topshirgansiz.\nYana topshirmoqchimisiz?", reply_markup=builder.as_markup())
+        await state.set_state(StudentTaskStates.waiting_for_video)  # qoladi
+        return
 
-        with open(file_path, "wb") as f:
-            f.write(file_bytes.getvalue())
+    await save_video_to_db(message, video, student, task)
+    await state.clear()
+    await message.answer("✅ Video muvaffaqiyatli yuborildi. Rahmat!")
 
-        # --- Ma'lumotlar bazasiga yozish ---
-        db_user = await sync_to_async(User.objects.get)(username=str(message.from_user.id))
-        task = await sync_to_async(Task.objects.get)(id=task_id)
-
-        await sync_to_async(StudentTaskVideo.objects.create)(
-            student=db_user,
-            task=task,
-            video_file=f"student_videos/{file_name}"
-        )
-
-        await state.clear()
-        await message.answer("✅ Video muvaffaqiyatli yuborildi. Rahmat!")
-
-    except Exception as e:
-        print(f"❌ Xatolik: {e}")
-        await message.answer("❌ Video yuborishda xatolik yuz berdi. Iltimos, qaytadan urinib ko‘ring.")
 
 
 
@@ -220,3 +220,19 @@ async def show_statistics(message: Message, state: FSMContext):
         await message.answer("Bu sinfga oid statistika mavjud emas.")
     else:
         await message.answer("Sizda statistikaga kirish huquqi yo'q.")
+
+
+@router.callback_query(F.data.startswith("resubmit_"))
+async def resubmit_video(callback: CallbackQuery, state: FSMContext):
+    task_id = int(callback.data.split("_")[1])
+    student = await sync_to_async(User.objects.get)(username=str(callback.from_user.id))
+    task = await sync_to_async(Task.objects.get)(id=task_id)
+
+    # Eski videoni o‘chirish
+    await sync_to_async(StudentTaskVideo.objects.filter(
+        student=student, task=task, uploaded_at__date=datetime.now().date()
+    ).delete)()
+
+    await callback.message.answer("♻️ Eski video o‘chirildi. Yangi videoni yuboring.")
+    await state.update_data(selected_task_id=task_id)
+    await state.set_state(StudentTaskStates.waiting_for_video)
