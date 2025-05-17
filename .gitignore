@@ -1,0 +1,28 @@
+# idea
+.idea
+idea
+/idea
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+venv
+env/
+
+# Django stuff:
+*.log
+*.pot
+*.pyc
+db.sqlite3
+/staticfiles
+/media
+
+# VSCode settings
+.vscode/
+
+# MacOS system files
+.DS_Store
